@@ -2,7 +2,7 @@
 use strict;
 use utf8;
 #
-# check_fs.pl: Check used/free/available blocks/inodes for a given filesystem. To be used as Nagios-like supervision plugin.
+# check_fs.pl: Check used/free/available blocks/inodes for a given filesystem. To be used as Nagios-like plugin.
 #
 # Author: Stéphane THOMAS
 # Date: 2017-06-08
@@ -19,15 +19,16 @@ __HEREDOC__
 
 sub help_exit { print($help_message); exit(3) }
 
-# About the 'smart match' operator (~~) : https://stackoverflow.com/questions/2383505/perl-if-element-in-list (should be ok for Perl ≥ 5.10)
-use experimental qw(smartmatch); # OK got it, don’t warn me.
+# About the 'smart match' operator (~~) : https://stackoverflow.com/questions/2383505/perl-if-element-in-list (ok for Perl ≥ 5.10.1)
+#~ use experimental qw(smartmatch); # OK got it, don’t warn me.
 
-use Filesys::Df; # http://search.cpan.org/~iguthrie/Filesys-Df-0.92/Df.pm (Filesys::DfPortable ????)
+# Not on our AIX… will use the external command "df" instead.
+# use Filesys::Df; # http://search.cpan.org/~iguthrie/Filesys-Df-0.92/Df.pm (Filesys::DfPortable ????)
+
 use Getopt::Long;
 use Switch;
 
-# **We assume the FS uses 1kB blocks**. **This script has to be modified to handle other block size**
-# Thresholds must be specified in kB for size values
+# Thresholds must be specified in kilo-bytes (in KiB !) for size values
 # Performance data are converted to bytes for convenience (no need to play with scaling to get a nicely labeled Y axis when graphing the RRD…)
 # Computed values (percentage of blocks/inodes free and percentage of blocks/inodes available) aren’t included in the perfdata
 
@@ -79,11 +80,27 @@ if (!($checkType ~~ @checkTypes)) {
 };
 # (as 'list' is not a valid check type, entering 'check_fs.pl -t list' will show the available check types…)
 
-# Get the data  **if the Filesys::Df module is not available it would need to be replaced by the parsing of the 'df -Pk' command.
-my $fs = df($fs_name);
+# Here we use the output of the df command to build the FS hash (%fs) as the module 'Filesys::Df' is not available on AIX (at least by default)
+# Once for the blocks :
+my $output = `df -Pk $fs_name |tail -1`;
+my @t = split('\s+', $output);
+my $fs;
+$fs->{blocks} = @t[1];
+$fs->{used} = @t[2];
+$fs->{bfree} = $fs->{bavail} = @t[3];
+$fs->{per} = @t[4];
+$fs->{per} =~ s/%//; 
+# Once for the inodes :
+$output = `df -ki $fs_name |tail -1`;
+@t = split('\s+', $output);
+$fs->{files} = @t[1];
+$fs->{fused} = @t[2];
+$fs->{ffree} = $fs->{favail} = @t[3];
+$fs->{fper} = @t[4];
+$fs->{fper} =~ s/%//; 
 
-# If we get something:
-if(defined($fs)) {
+# If we get something in the df output :
+if(@t) {
     
     # Use bytes instead of 1k-blocks in perfdata.
     my $byte_thresholds = ($warnThreshold*1024).";".($critThreshold*1024);
@@ -108,8 +125,8 @@ if(defined($fs)) {
     
     ## What to check ?
     # We check greater/less **or equal** for all test
-    # Ex: For a "used space" check the alert will raise if the value goes *over* the limit,
-    # for a "free space" check the alert will raise if the value goes *under* the limit.
+    # Ex: For a "used space" check the alert will raise if the value goes *over* the limit.
+    # For a "free space" check the alert will raise if the value goes *under* the limit.
     # If you need an alert if the FS has only 5% freespace, your threshold has to be 6.
     switch ($checkType) {
         
@@ -235,6 +252,6 @@ if(defined($fs)) {
     
 } else {
     
-    print("File \"$fs_name\" not found!\n"); exit(3);
+    print("UNKNOWN File \"$fs_name\" not found.\n"); exit(3);
 }
 
